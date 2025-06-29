@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { promises as fs } from "fs";
 import path from "path";
 import AdmZip from "adm-zip";
-import { analyzeWithOpenAI } from "@/lib/openai"; // Make sure this is correct
+import { analyzeWithOpenAI } from "@/lib/openai"; 
 import { OpenAI } from "openai";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { Buffer } from "buffer";
@@ -30,6 +30,15 @@ async function uploadToS3(fileBuffer: Buffer, fileName: string, mimeType: string
 // const charactersPath = path.join(process.cwd(), "src", "data", "characters.json");
 // const charactersRaw = await fs.readFile(charactersPath, "utf-8");
 // const characters = JSON.parse(charactersRaw) as { name: string, work: string, traits: string[], description: string }[];
+
+// Helper function to split text into chunks
+function splitIntoChunks(text: string, chunkSize: number): string[] {
+  const chunks = [];
+  for (let i = 0; i < text.length; i += chunkSize) {
+    chunks.push(text.slice(i, i + chunkSize));
+  }
+  return chunks;
+}
 
 export async function POST(req: NextRequest) {
   const formData = await req.formData();
@@ -66,56 +75,146 @@ export async function POST(req: NextRequest) {
   // Upload to S3
   const s3Url = await uploadToS3(buffer, file.name, file.type);
 
+  // Load characters summary for prompt (move this up, before file type checks)
+  const charactersPath = path.join(process.cwd(), "src", "data", "characters.json");
+  const charactersRaw = await fs.readFile(charactersPath, "utf-8");
+  const characters: { name: string; traits: string[]; description: string }[] = JSON.parse(charactersRaw);
+  const characterSummaries = characters.map((c) => `이름: ${c.name}, 특징: ${c.traits.join(", ")}, 설명: ${c.description}`).join("\n");
+
   if (file.type === "text/plain") {
     // Save and read the file content
     const filePath = path.join(process.cwd(), "public", "uploads", file.name);
     await fs.writeFile(filePath, buffer);
     const fileContent = await fs.readFile(filePath, "utf-8");
 
+    // Chunked summarization (parallelized)
+    const maxChars = 20000;
+    const chunks = splitIntoChunks(fileContent, maxChars);
+    const chunkSummaries: string[] = await Promise.all(
+      chunks.map(async (chunk) => {
+        const chunkPrompt = `아래 채팅방 대화 기록을 한 문장으로 요약해 줘. (조건: 임팩트 있고, 밈/드립/짤 느낌, '이 방은' 없이, 진짜 웃기게, 이유도 한두 문장으로! 절대 이모지(😂, ✈️, 🍜 등)나 특수문자(!!, ?? 등)는 쓰지 마. 생리, 성, 의료 등 민감하거나 불쾌할 수 있는 주제(예: 생리대, 임신, 성 관련 단어)는 절대 언급하지 마.)\n\n채팅방 대화 기록:\n"""\n${chunk}\n"""`;
+        const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+          { role: "system", content: "You are an assistant that summarizes chat logs in a funny, meme-like way and returns a JSON object." },
+          { role: "user", content: chunkPrompt }
+        ];
+        let chunkSummaryRaw = await analyzeWithOpenAI(messages) ?? "";
+        chunkSummaryRaw = chunkSummaryRaw.trim();
+        if (chunkSummaryRaw.startsWith("```json")) {
+          chunkSummaryRaw = chunkSummaryRaw.replace(/^```json/, "").replace(/```$/, "").trim();
+        } else if (chunkSummaryRaw.startsWith("```")) {
+          chunkSummaryRaw = chunkSummaryRaw.replace(/^```/, "").replace(/```$/, "").trim();
+        }
+        return chunkSummaryRaw;
+      })
+    );
+    // Step 1: Extract key points/topics from chunk summaries
+    const keyPointsPrompt = `아래 여러 부분 요약을 보고, 각 부분에서 빠지지 않고 반복되거나, 독특하게 등장한 특징/밈/사건을 최대한 많이 뽑아서 리스트로 만들어 줘. 그리고 채팅방에서 가장 많이 언급된 주제(키워드)도 따로 리스트로 뽑아 줘.
+부분 요약들:
+${chunkSummaries.join("\n")}
+`;
+    const keyPointsMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+      { role: "system", content: "You are an assistant that extracts key points and topics from chat summaries." },
+      { role: "user", content: keyPointsPrompt }
+    ];
+    let keyPointsRaw = await analyzeWithOpenAI(keyPointsMessages) ?? "";
+    keyPointsRaw = keyPointsRaw.trim();
+    if (keyPointsRaw.startsWith("```json")) {
+      keyPointsRaw = keyPointsRaw.replace(/^```json/, "").replace(/```$/, "").trim();
+    } else if (keyPointsRaw.startsWith("```")) {
+      keyPointsRaw = keyPointsRaw.replace(/^```/, "").replace(/```$/, "").trim();
+    }
+    // Step 2: Final summary using key points
+    const finalPrompt = `너는 요즘 유행하는 짤, 드립, 틱톡 자막 스타일로 대화방을 요약하는 드립 장인이야.
+
+아래 리스트(핵심 포인트/주제)를 참고해서, 각 부분에서 반복되거나 중요한 특징/밈/사건이 빠지지 않게, 전체 채팅방을 대표하는 한 문장으로 요약해 줘.
+
+반드시 다음 조건을 지켜:
+1. **한 문장만** 써. 절대 두 문장 이상 쓰지 마.  
+2. "이 방은", "이 채팅방은" 같은 서론 금지
+3. **이모지 금지**, **감상적인 말투 금지**, **분석 같은 문장 금지**  
+4. "~인 듯", "~같다", "웃음도 상승 중" 같은 마무리 금지 (재미없고 분위기 식음)  
+5. **요즘 유행하는 드립, 짤 말투, 짧고 임팩트 있는 표현**으로 써 줘  
+6. **비속어, 성적인 내용, 생리 관련 등 민감한 소재는 절대 금지**  
+7. 상황을 **과장하거나, 의외성 있게 비틀면 좋음**
+
+그리고 마지막엔, 왜 그런 문장이 나왔는지 **아주 짧게** 한두 문장으로 설명해 줘.  
+대화 내용 중 반복되거나 튀는 특징을 근거로 설명해.
+
+아래는 부분 요약에서 뽑은 핵심 포인트/주제야:
+${keyPointsRaw}
+`;
+    const finalMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+      { role: "system", content: "You are an assistant that summarizes chat logs in a funny, meme-like way and returns a JSON object." },
+      { role: "user", content: finalPrompt }
+    ];
+    let finalSummaryRaw = await analyzeWithOpenAI(finalMessages) ?? "";
+    if (typeof finalSummaryRaw === "string") {
+      finalSummaryRaw = finalSummaryRaw.trim();
+      if (finalSummaryRaw.startsWith("```json")) {
+        finalSummaryRaw = finalSummaryRaw.replace(/^```json/, "").replace(/```$/, "").trim();
+      } else if (finalSummaryRaw.startsWith("```")) {
+        finalSummaryRaw = finalSummaryRaw.replace(/^```/, "").replace(/```$/, "").trim();
+      }
+    }
+    let finalSummaryObj;
+    try {
+      finalSummaryObj = JSON.parse(finalSummaryRaw);
+    } catch {
+      finalSummaryObj = { error: "Failed to parse summary JSON", raw: finalSummaryRaw };
+    }
+
+    // For character/awards, use last chunk as before
+    const truncatedChat = chunks[chunks.length - 1];
+
     // Analyze with OpenAI
-    const userPrompt = `아래 채팅방 대화 기록을 보고, 다음 세 가지 방식으로 분석해 줘.  
-분석 결과는 꼭 한국어로, 그리고 AI나 챗봇처럼 딱딱하거나 너무 친절하게 쓰지 말고, 요즘 20~30대가 친구들끼리 장난치듯이, 유행어랑 밈, 드립, 그리고 재치 있는 농담을 섞어서 써 줘.  
-특히, 각 인물의 성격을 분석할 때는 그 사람이 실제로 쓴 말투, 자주 쓰는 단어, 대화에서 보인 행동(예: 드립력, 감정 표현 등)을 근거로, 실제 성격과 최대한 비슷하게 묘사해 줘.  
-설명할 때는 꼭 그 인물이 했던 말이나 행동을 예시로 들어 주되, 반드시 그 성격이나 특징을 잘 보여주는, 실제로 관련 있는 대화 내용만 사용해 줘.  
-분석과 직접적으로 연결되지 않는 아무 채팅이나 예시로 들지 말고, 꼭 관련 있는 대화만 골라서 써 줘.  
-너무 과장하거나 뻔한 분석은 피하고, 실제 대화에서 드러난 특징을 중심으로 해 줘.
+    const userPrompt = `아래 채팅방 대화 기록을 분석해서, 다음 세 가지를 해 줘.
 
-1. 인물 성격 분석  
-채팅방에 나온 인물(별명/이름 등) 각각의 성격을, 실제 대화에서 보인 특징을 근거로, 유명한 캐릭터(예: 인사이드 아웃의 버럭이, 겨울왕국의 올라프, 무한도전 박명수, 런닝맨 유재석 등)에 빗대서 재밌게 설명해 줘.  
-예시:  
-- "철수는 진짜 버럭이 그 자체임. '아니 이건 아니지!' 이런 식으로 자주 버럭하는데, 다들 철수 나오면 긴장함 ㅋㅋ"  
-- "영희는 올라프 느낌. '다 괜찮아~' 이런 말 자주 하고, 분위기 풀어주는 역할 담당."  
-- "민지는 박명수st. '야 그거 아니거든?' 이런 식으로 투덜대면서도, 은근 챙겨주는 거 있음."  
-- "준호는 유재석 느낌. 대화 주도하고, 다들 잘 챙기는데, 가끔 드립 치면 다 터짐 ㅋㅋ"
+1. 이 채팅방을 한 마디로 요약
+채팅방의 분위기, 특징, 밈, 대화 스타일을 한 문장(짧고 임팩트 있게, 요즘 유행하는 드립/밈/유행어/짤 느낌으로)으로 요약해 줘.
+(반드시 한국어로, 그리고 진짜 웃기게 써 줘야 해.
+"이 방은", "이 채팅방은" 등과 같은 말은 빼고, 바로 임팩트 있는 한 문장만 써 줘!
+예: "배고픔이 부른 우정의 연대기")
+그리고, 왜 그런 요약이 나왔는지 한두 문장으로 재치있게 이유도 써 줘.
+(실제 대화 내용, 분위기, 멤버들의 특징 등을 근거로!)
 
-2. 시상식(어워즈)  
-채팅방 멤버들에게 재밌는 상을 줘. 유행어나 밈, 예능 스타일로, 실제 대화에서 보인 특징을 근거로 해 줘.  
-예시:  
-- "최다 웃음상: 민수 (ㅋㅋ, ㅎㅎ 남발. 이 정도면 웃음 공장장임)"  
-- "밈 장인상: 지현 (유행어 장착 완료, 밈 없으면 대화 못 함 ㅋㅋ)"  
-- "눈치 제로상: 수빈 (상황 파악 못 하고 혼자 딴소리하는 거 국보급)"
+2. 멤버별 캐릭터 매칭
+아래 캐릭터 목록에서, 채팅방에 등장하는 각 멤버(별명/이름 등)마다 실제 대화에서 보인 특징을 근거로 가장 비슷한 캐릭터를 골라, 그 이유를 재치있고 웃기게 설명해 줘.
 
-3. IF(만약에)  
-채팅방 멤버들을 대상으로 엉뚱하고 재밌는 가정 질문을 던지고, 실제 대화에서 보인 특징을 반영해서 답변해 줘.  
-예시:  
-- "만약 이 채팅방 사람들이 모두 고양이라면, 민수가 제일 먼저 캣타워 찜함. 이유? '야 나 먼저!' 이런 말 자주 하거든 ㅋㅋ"  
-- "이 채팅방에서 대통령 뽑으면? 지현 당선 확정. 이유는? 말빨로 다 씹어먹음 ㄹㅇ"  
-- "다 같이 아이돌 그룹 하면, 수빈은 무조건 비주얼 담당인데, 춤은... 음... 그냥 웃겨서 담당 ㅋㅋ"
+캐릭터 목록:
+${characterSummaries}
 
-아래 채팅방 대화 기록을 분석해서, 위 세 가지 방식(1. 인물 성격 분석, 2. 시상식, 3. IF)에 따라 각각 결과를 JSON 객체로만 반환해 줘.  
-반드시 JSON 객체만 반환해 줘.  
-예시 형식:  
-{  
-  "character_analysis": [ ... ],  
-  "awards": [ ... ],  
-  "if_category": [ ... ]  
+3. 단톡방 시상식
+아래 시상식 주제(예: "${truncatedChat}")를 참고해서, 채팅방 멤버 각각의 순위를 매기고, 그 이유를 유쾌하고 재치있게 써 줘.
+
+아래 채팅방 대화 기록과 시상식 주제를 참고해서, 위 세 가지를 JSON 객체로만 반환해 줘.
+반드시 JSON 객체만 반환해 줘.
+예시 형식:
+{
+  "summary": "배고픔이 부른 우정의 연대기",
+  "summary_reason": "대화 내내 배고프다는 얘기만 하다가 결국 야식 메뉴까지 정함. 우정도 배고픔 앞에선 한 팀!",
+  "character_analysis": [
+    { "name": "철수", "character": "버럭이", "reason": "진짜 화수분임. 대화하다가 갑자기 버럭하는 거 레전드 ㅋㅋ" },
+    { "name": "영희", "character": "올라프", "reason": "긍정 에너지 뿜뿜, 분위기 메이커 인정~" },
+    { "name": "지현", "character": "퉁퉁퉁 사후르", "reason": "갑자기 분위기 띄우는 드립러, 대화에 '퉁퉁퉁~' 느낌으로 튀어나옴 ㅋㅋ" }
+  ],
+  "awards": [
+    { "rank": 1, "name": "주형우", "reason": "감정이입 장인, 드립치다가도 갑자기 감성 폭발." },
+    { "rank": 2, "name": "이재현", "reason": "겉으론 쿨한 척하지만, 속으론 이미 울고 있음" },
+    { "rank": 3, "name": "곽규민", "reason": "티는 안 내지만, 집에 가서 몰래 운다 ㅋㅋㅠㅠ" }
+  ]
 }
 
 채팅방 대화 기록:
 """
-${fileContent}
+${truncatedChat}
+"""
+
+시상식 주제:
+"""
+${truncatedChat}
 """
 `;
+    console.log("Prompt length (chars):", userPrompt.length);
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
       { role: "system", content: "You are an assistant that analyzes text files in multiple ways and returns a JSON object." },
       { role: "user", content: userPrompt }
@@ -132,20 +231,13 @@ ${fileContent}
       }
     }
 
-    let analysis;
-    try {
-      analysis = JSON.parse(analysisRaw);
-    } catch {
-      analysis = { error: "Failed to parse analysis JSON", raw: analysisRaw };
-    }
-
     const chatHistory = [
       { role: "user", content: userPrompt },
       { role: "assistant", content: analysisRaw }
     ];
 
     return NextResponse.json({
-      analysis,
+      analysis: finalSummaryObj,
       fileContent,
       chatHistory,
       s3Url
@@ -155,96 +247,108 @@ ${fileContent}
   if (file.type === "application/zip") {
     const zip = new AdmZip(buffer);
     const zipEntries = zip.getEntries();
-    const analyses: { file: string, content: string, analysis: string }[] = [];
-
+    let firstAnalysis = null;
     for (const entry of zipEntries) {
       if (!entry.isDirectory && entry.entryName.endsWith(".txt")) {
         const content = entry.getData().toString("utf-8");
-        // Analyze with OpenAI
-        const userPrompt = `아래 채팅방 대화 기록을 보고, 다음 세 가지 방식으로 분석해 줘.  
-분석 결과는 꼭 한국어로, 그리고 AI나 챗봇처럼 딱딱하거나 너무 친절하게 쓰지 말고, 요즘 20~30대가 친구들끼리 장난치듯이, 유행어랑 밈, 드립, 그리고 재치 있는 농담을 섞어서 써 줘.  
-특히, 각 인물의 성격을 분석할 때는 그 사람이 실제로 쓴 말투, 자주 쓰는 단어, 대화에서 보인 행동(예: 드립력, 감정 표현 등)을 근거로, 실제 성격과 최대한 비슷하게 묘사해 줘.  
-설명할 때는 꼭 그 인물이 했던 말이나 행동을 예시로 들어 주되, 반드시 그 성격이나 특징을 잘 보여주는, 실제로 관련 있는 대화 내용만 사용해 줘.  
-분석과 직접적으로 연결되지 않는 아무 채팅이나 예시로 들지 말고, 꼭 관련 있는 대화만 골라서 써 줘.  
-너무 과장하거나 뻔한 분석은 피하고, 실제 대화에서 드러난 특징을 중심으로 해 줘.
-
-1. 인물 성격 분석  
-채팅방에 나온 인물(별명/이름 등) 각각의 성격을, 실제 대화에서 보인 특징을 근거로, 유명한 캐릭터(예: 인사이드 아웃의 버럭이, 겨울왕국의 올라프, 무한도전 박명수, 런닝맨 유재석 등)에 빗대서 재밌게 설명해 줘.  
-예시:  
-- "철수는 진짜 버럭이 그 자체임. '아니 이건 아니지!' 이런 식으로 자주 버럭하는데, 다들 철수 나오면 긴장함 ㅋㅋ"  
-- "영희는 올라프 느낌. '다 괜찮아~' 이런 말 자주 하고, 분위기 풀어주는 역할 담당."  
-- "민지는 박명수st. '야 그거 아니거든?' 이런 식으로 투덜대면서도, 은근 챙겨주는 거 있음."  
-- "준호는 유재석 느낌. 대화 주도하고, 다들 잘 챙기는데, 가끔 드립 치면 다 터짐 ㅋㅋ"
-
-2. 시상식(어워즈)  
-채팅방 멤버들에게 재밌는 상을 줘. 유행어나 밈, 예능 스타일로, 실제 대화에서 보인 특징을 근거로 해 줘.  
-예시:  
-- "최다 웃음상: 민수 (ㅋㅋ, ㅎㅎ 남발. 이 정도면 웃음 공장장임)"  
-- "밈 장인상: 지현 (유행어 장착 완료, 밈 없으면 대화 못 함 ㅋㅋ)"  
-- "눈치 제로상: 수빈 (상황 파악 못 하고 혼자 딴소리하는 거 국보급)"
-
-3. IF(만약에)  
-채팅방 멤버들을 대상으로 엉뚱하고 재밌는 가정 질문을 던지고, 실제 대화에서 보인 특징을 반영해서 답변해 줘.  
-예시:  
-- "만약 이 채팅방 사람들이 모두 고양이라면, 민수가 제일 먼저 캣타워 찜함. 이유? '야 나 먼저!' 이런 말 자주 하거든 ㅋㅋ"  
-- "이 채팅방에서 대통령 뽑으면? 지현 당선 확정. 이유는? 말빨로 다 씹어먹음 ㄹㅇ"  
-- "다 같이 아이돌 그룹 하면, 수빈은 무조건 비주얼 담당인데, 춤은... 음... 그냥 웃겨서 담당 ㅋㅋ"
-
-아래 채팅방 대화 기록을 분석해서, 위 세 가지 방식(1. 인물 성격 분석, 2. 시상식, 3. IF)에 따라 각각 결과를 JSON 객체로만 반환해 줘.  
-반드시 JSON 객체만 반환해 줘.  
-예시 형식:  
-{  
-  "character_analysis": [ ... ],  
-  "awards": [ ... ],  
-  "if_category": [ ... ]  
-}
-
-채팅방 대화 기록:
-"""
-${content}
-"""
+        // Chunked summarization (parallelized)
+        const maxChars = 20000;
+        const chunks = splitIntoChunks(content, maxChars);
+        const chunkSummaries: string[] = await Promise.all(
+          chunks.map(async (chunk) => {
+            const chunkPrompt = `아래 채팅방 대화 기록을 한 문장으로 요약해 줘. (조건: 임팩트 있고, 밈/드립/짤 느낌, '이 방은' 없이, 진짜 웃기게, 이유도 한두 문장으로! 절대 이모지(😂, ✈️, 🍜 등)나 특수문자(!!, ?? 등)는 쓰지 마. 생리, 성, 의료 등 민감하거나 불쾌할 수 있는 주제(예: 생리대, 임신, 성 관련 단어)는 절대 언급하지 마.)\n\n채팅방 대화 기록:\n"""\n${chunk}\n"""`;
+            const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+              { role: "system", content: "You are an assistant that summarizes chat logs in a funny, meme-like way and returns a JSON object." },
+              { role: "user", content: chunkPrompt }
+            ];
+            let chunkSummaryRaw = await analyzeWithOpenAI(messages) ?? "";
+            chunkSummaryRaw = chunkSummaryRaw.trim();
+            if (chunkSummaryRaw.startsWith("```json")) {
+              chunkSummaryRaw = chunkSummaryRaw.replace(/^```json/, "").replace(/```$/, "").trim();
+            } else if (chunkSummaryRaw.startsWith("```")) {
+              chunkSummaryRaw = chunkSummaryRaw.replace(/^```/, "").replace(/```$/, "").trim();
+            }
+            return chunkSummaryRaw;
+          })
+        );
+        // Step 1: Extract key points/topics from chunk summaries
+        const keyPointsPrompt = `아래 여러 부분 요약을 보고, 각 부분에서 빠지지 않고 반복되거나, 독특하게 등장한 특징/밈/사건을 최대한 많이 뽑아서 리스트로 만들어 줘. 그리고 채팅방에서 가장 많이 언급된 주제(키워드)도 따로 리스트로 뽑아 줘.
+부분 요약들:
+${chunkSummaries.join("\n")}
 `;
-        const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-          { role: "system", content: "You are an assistant that analyzes text files in multiple ways and returns a JSON object." },
-          { role: "user", content: userPrompt }
+        const keyPointsMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+          { role: "system", content: "You are an assistant that extracts key points and topics from chat summaries." },
+          { role: "user", content: keyPointsPrompt }
         ];
-        let analysisRaw = await analyzeWithOpenAI(messages) ?? "";
+        let keyPointsRaw = await analyzeWithOpenAI(keyPointsMessages) ?? "";
+        keyPointsRaw = keyPointsRaw.trim();
+        if (keyPointsRaw.startsWith("```json")) {
+          keyPointsRaw = keyPointsRaw.replace(/^```json/, "").replace(/```$/, "").trim();
+        } else if (keyPointsRaw.startsWith("```")) {
+          keyPointsRaw = keyPointsRaw.replace(/^```/, "").replace(/```$/, "").trim();
+        }
+        // Step 2: Final summary using key points
+        const finalPrompt = `너는 요즘 유행하는 짤, 드립, 틱톡 자막 스타일로 대화방을 요약하는 드립 장인이야.
 
-        // Remove Markdown code block if present
-        if (typeof analysisRaw === "string") {
-          analysisRaw = analysisRaw.trim();
-          if (analysisRaw.startsWith("```json")) {
-            analysisRaw = analysisRaw.replace(/^```json/, "").replace(/```$/, "").trim();
-          } else if (analysisRaw.startsWith("```")) {
-            analysisRaw = analysisRaw.replace(/^```/, "").replace(/```$/, "").trim();
+아래 리스트(핵심 포인트/주제)를 참고해서, 각 부분에서 반복되거나 중요한 특징/밈/사건이 빠지지 않게, 전체 채팅방을 대표하는 한 문장으로 요약해 줘.
+
+반드시 다음 조건을 지켜:
+1. **한 문장만** 써. 절대 두 문장 이상 쓰지 마.  
+2. "이 방은", "이 채팅방은" 같은 서론 금지
+3. **이모지 금지**, **감상적인 말투 금지**, **분석 같은 문장 금지**  
+4. "~인 듯", "~같다", "웃음도 상승 중" 같은 마무리 금지 (재미없고 분위기 식음)  
+5. **요즘 유행하는 드립, 짤 말투, 짧고 임팩트 있는 표현**으로 써 줘  
+6. **비속어, 성적인 내용, 생리 관련 등 민감한 소재는 절대 금지**  
+7. 상황을 **과장하거나, 의외성 있게 비틀면 좋음**
+
+그리고 마지막엔, 왜 그런 문장이 나왔는지 **아주 짧게** 한두 문장으로 설명해 줘.  
+대화 내용 중 반복되거나 튀는 특징을 근거로 설명해.
+
+아래는 부분 요약에서 뽑은 핵심 포인트/주제야:
+${keyPointsRaw}
+`;
+        const finalMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+          { role: "system", content: "You are an assistant that summarizes chat logs in a funny, meme-like way and returns a JSON object." },
+          { role: "user", content: finalPrompt }
+        ];
+        let finalSummaryRaw = await analyzeWithOpenAI(finalMessages) ?? "";
+        if (typeof finalSummaryRaw === "string") {
+          finalSummaryRaw = finalSummaryRaw.trim();
+          if (finalSummaryRaw.startsWith("```json")) {
+            finalSummaryRaw = finalSummaryRaw.replace(/^```json/, "").replace(/```$/, "").trim();
+          } else if (finalSummaryRaw.startsWith("```")) {
+            finalSummaryRaw = finalSummaryRaw.replace(/^```/, "").replace(/```$/, "").trim();
           }
         }
-
-        let analysis;
+        let finalSummaryObj;
         try {
-          analysis = JSON.parse(analysisRaw);
+          finalSummaryObj = JSON.parse(finalSummaryRaw);
         } catch {
-          analysis = { error: "Failed to parse analysis JSON", raw: analysisRaw };
+          finalSummaryObj = { error: "Failed to parse summary JSON", raw: finalSummaryRaw };
         }
-        analyses.push({ file: entry.entryName, content, analysis });
+        // For character/awards, use last chunk as before
+        //const truncatedContent = chunks[chunks.length - 1];
+        firstAnalysis = { file: entry.entryName, content, analysis: finalSummaryObj };
+        break; // Only process the first .txt file
       }
     }
 
-    if (analyses.length === 0) {
+    if (!firstAnalysis) {
       return NextResponse.json({
         analysis: "",
         fileContent: "",
         chatHistory: [],
-        message: "No .txt files found in the zip."
+        message: "No .txt files found in the zip.",
+        s3Url
       });
     }
 
     return NextResponse.json({
-      analysis: analyses, // array of { file, content, analysis }
-      fileContent: analyses.length === 1 ? analyses[0].content : "",
+      analysis: firstAnalysis.analysis,
+      fileContent: firstAnalysis.content,
       chatHistory: [],
-      message: "Zip uploaded and .txt files analyzed.",
-      files: analyses.map(a => a.file),
+      message: `Zip uploaded and first .txt file (${firstAnalysis.file}) analyzed.`,
+      file: firstAnalysis.file,
       s3Url
     });
   } else {
