@@ -264,6 +264,13 @@ ${chunkSummaries.join("\n")}
           }
         }
 
+        // Assign characterImage in a round-robin fashion (1.png~4.png)
+        const imageCount = 4;
+        characterAssignArr = characterAssignArr.map((c, idx) => ({
+          ...c,
+          characterImage: `/images/${(idx % imageCount) + 1}.png`
+        }));
+
         // Step 2: Skip evidence extraction for speed. Use characterAssignArr directly.
 
         // Step 3: Awards prompt (dedicated LLM call)
@@ -442,6 +449,13 @@ ${chunkSummaries.join("\n")}
             });
           }
         }
+
+        // Assign characterImage in a round-robin fashion (1.png~4.png) for zip
+        const imageCount = 4;
+        characterAssignArr = characterAssignArr.map((c, idx) => ({
+          ...c,
+          characterImage: `/images/${(idx % imageCount) + 1}.png`
+        }));
 
         // Step 2: Skip evidence extraction for speed. Use characterAssignArr directly.
 
