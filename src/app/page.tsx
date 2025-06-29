@@ -13,6 +13,7 @@ export default function MobileChatPage() {
   const [showAnalysis, setShowAnalysis] = useState(false)
   const [showLoading, setShowLoading] = useState(false)
   const [analysisResult, setAnalysisResult] = useState(null)
+  const [awardsResult, setAwardsResult] = useState<{ topic: string; awards: { rank: number; name: string; reason: string }[] }[] | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -142,6 +143,21 @@ export default function MobileChatPage() {
         setShowLoading(false);
       } else {
         setAnalysisResult(data);
+        if (data.chatId) {
+          try {
+            const awardsRes = await fetch(`/api/results?chatId=${encodeURIComponent(data.chatId)}`);
+            if (awardsRes.ok) {
+              const awardsData = await awardsRes.json();
+              setAwardsResult(awardsData);
+            } else {
+              setAwardsResult(null);
+            }
+          } catch {
+            setAwardsResult(null);
+          }
+        } else {
+          setAwardsResult(null);
+        }
         setShowLoading(false);
         setShowAnalysis(true);
       }
@@ -171,7 +187,15 @@ export default function MobileChatPage() {
           person.reason === "메시지가 부족하거나 분석이 불가합니다."
         )
     );
-    const awards = result.analysis?.awards || [];
+    // Use awardsResult if available, otherwise fallback to old awards
+    let awardsTopic = "";
+    let awards: { rank: number; name: string; reason: string }[] = [];
+    if (awardsResult && Array.isArray(awardsResult) && awardsResult.length > 0) {
+      awardsTopic = awardsResult[0].topic;
+      awards = awardsResult[0].awards;
+    } else if (result.analysis?.awards) {
+      awards = result.analysis.awards;
+    }
 
     return (
       <div className="min-h-screen bg-white max-w-md mx-auto">
@@ -322,7 +346,7 @@ export default function MobileChatPage() {
               className="font-bold text-black leading-relaxed px-2 text-left text-xl"
               style={{ fontFamily: "ChosunGu, sans-serif" }}
             >
-              주제: 연인과 싸웠을 때, 제일 먼저 울 것 같은 사람 순위
+              주제: {awardsTopic}
             </h2>
           </div>
 

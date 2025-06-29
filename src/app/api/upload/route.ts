@@ -6,6 +6,7 @@ import { analyzeWithOpenAI } from "@/lib/openai";
 import { OpenAI } from "openai";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { Buffer } from "buffer";
+import { randomUUID } from "crypto";
 
 const s3 = new S3Client({
   region: process.env.AWS_REGION,
@@ -104,6 +105,12 @@ export async function POST(req: NextRequest) {
       error: "No file uploaded"
     }, { status: 400 });
   }
+
+  // Generate unique chatId
+  const originalName = file.name.replace(/\.[^/.]+$/, "");
+  const timestamp = Date.now();
+  const uniqueId = randomUUID();
+  const chatId = `${originalName}_${timestamp}_${uniqueId}`;
 
   const allowedTypes = [
     "text/plain", // .txt
@@ -218,6 +225,11 @@ ${chunkSummaries.join("\n")}
           }
         }
 
+        // Read awards topics
+        const awardsTopicsPath = path.join(process.cwd(), "src", "data", "awards_topics.json");
+        const awardsTopicsRaw = await fs.readFile(awardsTopicsPath, "utf-8");
+        const awardsTopics: string[] = JSON.parse(awardsTopicsRaw);
+
         // 3. For character/awards, use only the last chunk (limit to 5,000 chars)
         const lastChunk = chunks[chunks.length - 1];
         const safeLastChunk = lastChunk.length > 5000 ? lastChunk.slice(-5000) : lastChunk;
@@ -273,47 +285,63 @@ ${chunkSummaries.join("\n")}
 
         // Step 2: Skip evidence extraction for speed. Use characterAssignArr directly.
 
-        // Step 3: Awards prompt (dedicated LLM call)
-        const awardsPrompt = `아래 채팅방 대화 기록을 보고, 단톡방 시상식(awards)만 해 줘.\n\n조건:\n- 반드시 1~3등까지만 주고, 채팅방에서의 특징을 찰지게 드립으로 설명\n- 진지한 감상 ❌, 웃긴 과장/반전 드립 환영\n- 말투는 \"얘는 거의 00상 줘야 함ㅋㅋ\", \"존재 자체가 이벤트임\" 등 자유롭게\n- 반드시 아래 형식의 JSON 배열로만 반환해. (예: [ { \"rank\": 1, \"name\": \"주형우\", \"reason\": \"감정이입 장인, 드립치다가도 갑자기 감성 폭발.\" }, ... ])\n\n채팅방 대화 기록:\n"""\n${safeLastChunk}\n"""`;
-        const awardsMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-          { role: "system", content: "You are an assistant that analyzes chat logs and returns awards as a JSON array." },
-          { role: "user", content: awardsPrompt }
-        ];
-        const awardsRaw = await analyzeWithOpenAI(awardsMessages) ?? "";
-        let awardsArr: { rank: number; name: string; reason: string }[] = [];
-        if (typeof awardsRaw === "string") {
-          let cleaned = awardsRaw.trim();
-          cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
-          try {
-            awardsArr = JSON.parse(cleaned);
-          } catch {
-            // Try to recover the largest valid JSON array substring
-            const firstBracket = cleaned.indexOf('[');
-            const lastBracket = cleaned.lastIndexOf(']');
-            if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
-              const possibleJson = cleaned.slice(firstBracket, lastBracket + 1);
-              try {
-                awardsArr = JSON.parse(possibleJson);
-              } catch {
-                awardsArr = [];
+        // Step 3: Awards for all topics
+        const allAwardsResults: { topic: string; awards: { rank: number; name: string; reason: string }[] }[] = [];
+        for (const topic of awardsTopics) {
+          const awardsPrompt = `아래 채팅방 대화 기록을 보고, "${topic}"에 대한 단톡방 시상식(awards)만 해 줘.\n\n조건:\n- 반드시 1~3등까지만 주고, 채팅방에서의 특징을 찰지게 드립으로 설명\n- 진지한 감상 ❌, 웃긴 과장/반전 드립 환영\n- 말투는 \"얘는 거의 00상 줘야 함ㅋㅋ\", \"존재 자체가 이벤트임\" 등 자유롭게\n- 반드시 아래 형식의 JSON 배열로만 반환해. (예: [ { \"rank\": 1, \"name\": \"주형우\", \"reason\": \"감정이입 장인, 드립치다가도 갑자기 감성 폭발.\" }, ... ])\n\n채팅방 대화 기록:\n"""\n${safeLastChunk}\n"""`;
+          const awardsMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+            { role: "system", content: "You are an assistant that analyzes chat logs and returns awards as a JSON array." },
+            { role: "user", content: awardsPrompt }
+          ];
+          const awardsRaw = await analyzeWithOpenAI(awardsMessages) ?? "";
+          let awardsArr: { rank: number; name: string; reason: string }[] = [];
+          if (typeof awardsRaw === "string") {
+            let cleaned = awardsRaw.trim();
+            cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
+            try {
+              awardsArr = JSON.parse(cleaned);
+            } catch {
+              // Try to recover the largest valid JSON array substring
+              const firstBracket = cleaned.indexOf('[');
+              const lastBracket = cleaned.lastIndexOf(']');
+              if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+                const possibleJson = cleaned.slice(firstBracket, lastBracket + 1);
+                try {
+                  awardsArr = JSON.parse(possibleJson);
+                } catch {
+                  awardsArr = [];
+                }
               }
             }
           }
+          allAwardsResults.push({ topic, awards: awardsArr });
         }
 
         // Merge summary and character/awards analysis
         const mergedResult: Record<string, unknown> = typeof summaryObj === 'object' && summaryObj !== null ? summaryObj as Record<string, unknown> : {};
         mergedResult.character_analysis = characterAssignArr;
-        mergedResult.awards = awardsArr;
+        mergedResult.awards = allAwardsResults;
 
         // Log the final analysis result for debugging
         console.log("[ANALYSIS_RESULT]", JSON.stringify(mergedResult, null, 2));
+
+        // Save only allAwardsResults to S3 (not mergedResult)
+        const resultsJson = JSON.stringify(allAwardsResults, null, 2);
+        const s3Key = `awards_results/${chatId}.json`;
+        const putCommand = new PutObjectCommand({
+          Bucket: process.env.AWS_S3_BUCKET!,
+          Key: s3Key,
+          Body: resultsJson,
+          ContentType: "application/json",
+        });
+        await s3.send(putCommand);
 
         return NextResponse.json({
           analysis: mergedResult,
           fileContent,
           chatHistory: [],
-          s3Url
+          s3Url,
+          chatId
         });
   }
 
@@ -404,6 +432,11 @@ ${chunkSummaries.join("\n")}
           }
         }
 
+        // Read awards topics
+        const awardsTopicsPath = path.join(process.cwd(), "src", "data", "awards_topics.json");
+        const awardsTopicsRaw = await fs.readFile(awardsTopicsPath, "utf-8");
+        const awardsTopics: string[] = JSON.parse(awardsTopicsRaw);
+
         // 3. For character/awards, use only the last chunk (limit to 5,000 chars)
         const lastChunk = chunks[chunks.length - 1];
         const safeLastChunk = lastChunk.length > 5000 ? lastChunk.slice(-5000) : lastChunk;
@@ -459,48 +492,65 @@ ${chunkSummaries.join("\n")}
 
         // Step 2: Skip evidence extraction for speed. Use characterAssignArr directly.
 
-        // Step 3: Awards prompt (dedicated LLM call)
-        const awardsPrompt = `아래 채팅방 대화 기록을 보고, 단톡방 시상식(awards)만 해 줘.\n\n조건:\n- 반드시 1~3등까지만 주고, 채팅방에서의 특징을 찰지게 드립으로 설명\n- 진지한 감상 ❌, 웃긴 과장/반전 드립 환영\n- 말투는 \"얘는 거의 00상 줘야 함ㅋㅋ\", \"존재 자체가 이벤트임\" 등 자유롭게\n- 반드시 아래 형식의 JSON 배열로만 반환해. (예: [ { \"rank\": 1, \"name\": \"주형우\", \"reason\": \"감정이입 장인, 드립치다가도 갑자기 감성 폭발.\" }, ... ])\n\n채팅방 대화 기록:\n"""\n${safeLastChunk}\n"""`;
-        const awardsMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-          { role: "system", content: "You are an assistant that analyzes chat logs and returns awards as a JSON array." },
-          { role: "user", content: awardsPrompt }
-        ];
-        const awardsRaw = await analyzeWithOpenAI(awardsMessages) ?? "";
-        let awardsArr: { rank: number; name: string; reason: string }[] = [];
-        if (typeof awardsRaw === "string") {
-          let cleaned = awardsRaw.trim();
-          cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
-          try {
-            awardsArr = JSON.parse(cleaned);
-          } catch {
-            // Try to recover the largest valid JSON array substring
-            const firstBracket = cleaned.indexOf('[');
-            const lastBracket = cleaned.lastIndexOf(']');
-            if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
-              const possibleJson = cleaned.slice(firstBracket, lastBracket + 1);
-              try {
-                awardsArr = JSON.parse(possibleJson);
-              } catch {
-                awardsArr = [];
+        // Step 3: Awards for all topics
+        const allAwardsResults: { topic: string; awards: { rank: number; name: string; reason: string }[] }[] = [];
+        for (const topic of awardsTopics) {
+          const awardsPrompt = `아래 채팅방 대화 기록을 보고, "${topic}"에 대한 단톡방 시상식(awards)만 해 줘.\n\n조건:\n- 반드시 1~3등까지만 주고, 채팅방에서의 특징을 찰지게 드립으로 설명\n- 진지한 감상 ❌, 웃긴 과장/반전 드립 환영\n- 말투는 \"얘는 거의 00상 줘야 함ㅋㅋ\", \"존재 자체가 이벤트임\" 등 자유롭게\n- 반드시 아래 형식의 JSON 배열로만 반환해. (예: [ { \"rank\": 1, \"name\": \"주형우\", \"reason\": \"감정이입 장인, 드립치다가도 갑자기 감성 폭발.\" }, ... ])\n\n채팅방 대화 기록:\n"""\n${safeLastChunk}\n"""`;
+          const awardsMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+            { role: "system", content: "You are an assistant that analyzes chat logs and returns awards as a JSON array." },
+            { role: "user", content: awardsPrompt }
+          ];
+          const awardsRaw = await analyzeWithOpenAI(awardsMessages) ?? "";
+          let awardsArr: { rank: number; name: string; reason: string }[] = [];
+          if (typeof awardsRaw === "string") {
+            let cleaned = awardsRaw.trim();
+            cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
+            try {
+              awardsArr = JSON.parse(cleaned);
+            } catch {
+              // Try to recover the largest valid JSON array substring
+              const firstBracket = cleaned.indexOf('[');
+              const lastBracket = cleaned.lastIndexOf(']');
+              if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+                const possibleJson = cleaned.slice(firstBracket, lastBracket + 1);
+                try {
+                  awardsArr = JSON.parse(possibleJson);
+                } catch {
+                  awardsArr = [];
+                }
               }
             }
           }
+          allAwardsResults.push({ topic, awards: awardsArr });
         }
 
         // Merge summary and character/awards analysis
         const mergedResult: Record<string, unknown> = typeof summaryObj === 'object' && summaryObj !== null ? summaryObj as Record<string, unknown> : {};
         mergedResult.character_analysis = characterAssignArr;
-        mergedResult.awards = awardsArr;
+        mergedResult.awards = allAwardsResults;
 
         // Log the zip analysis result for debugging
         console.log("[ANALYSIS_RESULT] (zip)", JSON.stringify(mergedResult, null, 2));
+
+        // Save only allAwardsResults to S3 (not mergedResult) for zip
+        const resultsJson = JSON.stringify(allAwardsResults, null, 2);
+        const s3Key = `awards_results/${chatId}.json`;
+        const putCommand = new PutObjectCommand({
+          Bucket: process.env.AWS_S3_BUCKET!,
+          Key: s3Key,
+          Body: resultsJson,
+          ContentType: "application/json",
+        });
+        await s3.send(putCommand);
+
         return NextResponse.json({
           analysis: mergedResult,
           fileContent: content,
           chatHistory: [],
           message: `Zip uploaded and first .txt file (${entry.entryName}) analyzed.`,
           file: entry.entryName,
-          s3Url
+          s3Url,
+          chatId
         });
       }
     }
