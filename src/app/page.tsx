@@ -3,7 +3,7 @@
 import type React from "react"
 
 import Image from "next/image"
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { ChevronLeft, ChevronRight, X } from "lucide-react"
 
 export default function MobileChatPage() {
@@ -15,6 +15,9 @@ export default function MobileChatPage() {
   const [analysisResult, setAnalysisResult] = useState(null)
   const [awardsResult, setAwardsResult] = useState<{ topic: string; awards: { rank: number; name: string; reason: string }[] }[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [selectedQuestion, setSelectedQuestion] = useState<number | null>(null)
+  const [viewedQuestions, setViewedQuestions] = useState<number[]>([])
+  const [currentChoices, setCurrentChoices] = useState<number[]>([])
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -165,6 +168,48 @@ export default function MobileChatPage() {
       setError("서버와 통신 중 오류가 발생했습니다.");
       setShowLoading(false);
     }
+  };
+
+  // Helper to get all available additional question indices (1, 2, 3, ...)
+  const getAllAdditionalIndices = () =>
+    awardsResult ? awardsResult.map((_, i) => i).slice(1) : [];
+
+  // Helper to get a random sample from an array
+  function getRandomSample<T>(arr: T[], n: number): T[] {
+    const copy = [...arr];
+    const result: T[] = [];
+    while (result.length < n && copy.length > 0) {
+      const idx = Math.floor(Math.random() * copy.length);
+      result.push(copy.splice(idx, 1)[0]);
+    }
+    return result;
+  }
+
+  // On first show of additional questions
+  useEffect(() => {
+    if (awardsResult && currentChoices.length === 0 && viewedQuestions.length === 0) {
+      const indices = getAllAdditionalIndices();
+      setCurrentChoices(getRandomSample(indices, 3));
+    }
+  }, [awardsResult, currentChoices.length, viewedQuestions.length]);
+
+  const handleSelectQuestion = (idx: number) => {
+    setSelectedQuestion(idx);
+    setViewedQuestions((prev) => (prev.includes(idx) ? prev : [...prev, idx]));
+  };
+
+  const handleShowOtherQuestions = () => {
+    const lastSelected = selectedQuestion;
+    const remaining = currentChoices.filter((i) => i !== lastSelected);
+    const allIndices = getAllAdditionalIndices();
+    const used = new Set([...viewedQuestions, ...remaining]);
+    const available = allIndices.filter((i) => !used.has(i));
+    const newChoices = [...remaining];
+    if (available.length > 0) {
+      newChoices.push(getRandomSample(available, 1)[0]);
+    }
+    setCurrentChoices(newChoices);
+    setSelectedQuestion(null);
   };
 
   // 분석 페이지가 표시되면 분석 페이지 렌더링
@@ -441,6 +486,108 @@ export default function MobileChatPage() {
             </div>
           </div>
         </div>
+
+        {/* 추가 질문 섹션 */}
+        {awardsResult && awardsResult.length > 1 && (selectedQuestion !== null || viewedQuestions.length < 3) && (
+          <div className="px-4 py-6">
+            {/* 제목 이미지 */}
+            <div className="w-full mb-6">
+              <Image
+                src="/images/more.png"
+                alt="이런 질문도 있어요"
+                width={400}
+                height={60}
+                className="object-contain w-full"
+              />
+            </div>
+
+            {/* 질문 리스트 */}
+            {selectedQuestion === null && viewedQuestions.length < 3 && (
+              <div className="space-y-4 mb-6">
+                {currentChoices.map((idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => handleSelectQuestion(idx)}
+                    className="w-full p-4 bg-gray-100 rounded-2xl hover:bg-gray-200 transition-colors"
+                  >
+                    <p
+                      className="text-black text-center font-medium text-base"
+                      style={{ fontFamily: "ChosunGu, sans-serif" }}
+                    >
+                      {awardsResult[idx].topic}
+                    </p>
+                  </button>
+                ))}
+                <div className="text-center mt-4">
+                  <p className="text-sm text-gray-500" style={{ fontFamily: "BookkMyungjo-Bd, serif" }}>
+                    ※ 추가질문은 최대 3개까지 가능합니다.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* 선택된 질문 결과 */}
+            {selectedQuestion !== null && (() => {
+              const item = awardsResult[selectedQuestion];
+              if (!item) return null;
+              return (
+                <div className="mb-6">
+                  <div className="w-full mb-6">
+                    <h2
+                      className="font-bold text-black leading-relaxed px-2 text-left text-xl"
+                      style={{ fontFamily: "ChosunGu, sans-serif" }}
+                    >
+                      {item.topic}
+                    </h2>
+                  </div>
+                  <div className="space-y-6">
+                    {item.awards.map((ranking, index) => (
+                      <div key={index} className="bg-white">
+                        <div className="flex items-start gap-2 mb-2">
+                          <span className="text-2xl font-bold text-black" style={{ fontFamily: "BookkMyungjo-Bd, serif" }}>
+                            {ranking.rank}위
+                          </span>
+                          <span className="text-xl font-bold text-black" style={{ fontFamily: "BookkMyungjo-Bd, serif" }}>
+                            -
+                          </span>
+                          <span
+                            className={`text-2xl font-bold ${
+                              ranking.rank === 1
+                                ? "bg-gradient-to-r from-yellow-400 via-yellow-500 to-yellow-600 bg-clip-text text-transparent"
+                                : ranking.rank === 2
+                                ? "bg-gradient-to-r from-gray-400 via-gray-500 to-gray-600 bg-clip-text text-transparent"
+                                : "bg-gradient-to-r from-amber-600 via-amber-700 to-amber-800 bg-clip-text text-transparent"
+                            }`}
+                            style={{ fontFamily: "BookkMyungjo-Bd, serif" }}
+                          >
+                            {ranking.name}
+                          </span>
+                        </div>
+                        <p
+                          className="text-base font-semibold leading-relaxed"
+                          style={{ fontFamily: "Pretendard-Regular, sans-serif", color: "#333333" }}
+                        >
+                          {ranking.reason}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                  {viewedQuestions.length < 3 && (
+                    <div className="text-center mt-6">
+                      <button
+                        onClick={handleShowOtherQuestions}
+                        className="px-6 py-2 bg-gray-300 text-black rounded-lg hover:bg-gray-400 transition-colors"
+                        style={{ fontFamily: "BookkMyungjo-Bd, serif" }}
+                      >
+                        다른 질문 보기
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+          </div>
+        )}
 
         {/* 공유 섹션 */}
         <div className="px-4 py-6">
