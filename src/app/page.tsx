@@ -11,6 +11,7 @@ export default function MobileChatPage() {
   const [showPopup, setShowPopup] = useState(false)
   const [currentPage, setCurrentPage] = useState(0)
   const [showAnalysis, setShowAnalysis] = useState(false)
+  const [showLoading, setShowLoading] = useState(false)
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -81,7 +82,7 @@ export default function MobileChatPage() {
     switch (currentPage) {
       case 0:
         return (
-          <div className="relative w-full h-full flex items-center justify-center bg-white">
+          <div className="relative w-full h-full flex items-end justify-center bg-white">
             <Image
               src="/images/how1.png"
               alt="카카오톡 사용법 1단계"
@@ -93,7 +94,7 @@ export default function MobileChatPage() {
         )
       case 1:
         return (
-          <div className="relative w-full h-full flex items-center justify-center bg-white">
+          <div className="relative w-full h-full flex items-end justify-center bg-white">
             <Image
               src="/images/how2.png"
               alt="카카오톡 사용법 2단계"
@@ -105,7 +106,7 @@ export default function MobileChatPage() {
         )
       case 2:
         return (
-          <div className="relative w-full h-full flex items-center justify-center bg-white">
+          <div className="relative w-full h-full flex items-end justify-center bg-white">
             <Image
               src="/images/how3.png"
               alt="카카오톡 사용법 3단계"
@@ -121,7 +122,12 @@ export default function MobileChatPage() {
   }
 
   const startAnalysis = () => {
-    setShowAnalysis(true)
+    setShowLoading(true)
+    // 10초 후에 분석 페이지로 이동
+    setTimeout(() => {
+      setShowLoading(false)
+      setShowAnalysis(true)
+    }, 10000)
   }
 
   // 캐릭터 분석 데이터
@@ -129,18 +135,56 @@ export default function MobileChatPage() {
     {
       name: "주형우",
       character: "아이언맨",
-      characterImage: "/placeholder.svg?height=200&width=150",
+      characterImage: "/images/1.png",
       description:
         '말재간+상황 판단+유머+리더십 = 형우\n"경관용사단 파면합니다", "계엄", "와파 용사단" 등 말장난 천재.',
     },
     {
       name: "이재현",
       character: "곰돌이 푸",
-      characterImage: "/placeholder.svg?height=200&width=150",
+      characterImage: "/images/2.png",
       description:
-        '늘 웃하지만 자기 할 말은 꼭 하고, 드림력 만렙.\n"뽀지직쫑", "꾸꾸 차 꾸꾸러 꾸" 같은 의성어 장인\n→ "영동하고 따뜻한 드림리푸"',
+        '늘 웃지만 자기 할 말은 꼭 하고, 드림력 만렙.\n"뽀지직쫑", "꾸꾸 차 꾸꾸러 꾸" 같은 의성어 장인\n→ "영동하고 따뜻한 드림리푸"',
+    },
+    {
+      name: "김민수",
+      character: "스파이더맨",
+      characterImage: "/images/3.png",
+      description:
+        '조용하지만 핵심을 찌르는 한마디의 달인.\n"그거 맞네", "인정" 같은 짧고 굵은 반응으로\n대화의 분위기를 정리하는 능력자',
+    },
+    {
+      name: "박지훈",
+      character: "토르",
+      characterImage: "/images/4.png",
+      description:
+        '에너지 넘치는 분위기 메이커, 항상 긍정적.\n"ㅋㅋㅋㅋㅋ", "대박", "미쳤다" 등으로\n톡방에 활력을 불어넣는 비타민 같은 존재',
     },
   ]
+
+  // 로딩 페이지가 표시되면 로딩 페이지 렌더링
+  if (showLoading) {
+    return (
+      <div className="min-h-screen bg-white max-w-md mx-auto flex flex-col items-center justify-center">
+        {/* 로딩맨 이미지 - 회전 애니메이션, 크기 증가 */}
+        <div className="mb-8">
+          <div
+            className="animate-spin"
+            style={{
+              animationDuration: "4s",
+            }}
+          >
+            <Image src="/images/loadingman.png" alt="분석 중" width={250} height={375} className="object-contain" />
+          </div>
+        </div>
+
+        {/* 분석중 텍스트 - 크기 감소 */}
+        <div>
+          <Image src="/images/loading.png" alt="분석중..." width={150} height={45} className="object-contain" />
+        </div>
+      </div>
+    )
+  }
 
   // 분석 페이지가 표시되면 분석 페이지 렌더링
   if (showAnalysis) {
@@ -171,7 +215,7 @@ export default function MobileChatPage() {
           <div className="absolute top-[25%] right-[15%] z-10">
             <div
               className="text-xl font-bold text-black text-center mr-[18px] mt-[-23px]"
-              style={{ fontFamily: "굴림체, Gulim, monospace" }}
+              style={{ fontFamily: "ChosunGu, sans-serif" }}
             >
               배고픔이 부른
               <br />
@@ -184,7 +228,7 @@ export default function MobileChatPage() {
             <div className="p-4">
               <p
                 className="leading-relaxed mr-[-98px] mt-2 mb-[7px] leading-5 text-base font-semibold ml-[43px]"
-                style={{ fontFamily: "굴림체, Gulim, monospace", color: "#333333" }}
+                style={{ fontFamily: "Pretendard-Regular, sans-serif", color: "#333333" }}
               >
                 수많은 식사 약속과 메뉴 선정, 고기냐 돈까스냐로 이어지는 진지한 논의들, 그리고 어디서 밥 먹을지 정하는
                 데 온 에너지를 쏟는 모습까지... 이 대화방은 진심으로 밥을 함께 먹는 게 중심인 우정의 기록이야.
@@ -208,8 +252,8 @@ export default function MobileChatPage() {
         <div className="px-4 py-6 space-y-8">
           {characterAnalysis.map((person, index) => (
             <div key={index} className="bg-white p-6">
-              {/* 이름 */}
-              <h3 className="text-2xl font-bold text-black mb-4" style={{ fontFamily: "굴림체, Gulim, monospace" }}>
+              {/* 이름 - 바탕 폰트로 변경 */}
+              <h3 className="text-2xl font-bold text-black mb-4" style={{ fontFamily: "BookkMyungjo-Bd, serif" }}>
                 {person.name}
               </h3>
 
@@ -229,7 +273,7 @@ export default function MobileChatPage() {
                     <div className="absolute inset-0 flex items-center justify-center">
                       <p
                         className="text-black text-center px-4 mr-[30px] font-extrabold text-xl mt-[-9px]"
-                        style={{ fontFamily: "굴림체, Gulim, monospace" }}
+                        style={{ fontFamily: "ChosunGu, sans-serif" }}
                       >
                         {person.character}
                       </p>
@@ -237,23 +281,23 @@ export default function MobileChatPage() {
                   </div>
                 </div>
 
-                {/* 캐릭터 이미지 */}
-                <div className="w-32 h-40 flex-shrink-0">
+                {/* 캐릭터 이미지 - 세로로 더 늘리고 좌우로 꽉 채움 */}
+                <div className="w-32 h-52 flex-shrink-0">
                   <Image
                     src={person.characterImage || "/placeholder.svg"}
                     alt={person.character}
                     width={128}
-                    height={160}
-                    className="object-contain w-full h-full"
+                    height={208}
+                    className="object-cover w-full h-full rounded-lg"
                   />
                 </div>
               </div>
 
-              {/* 설명 */}
+              {/* 설명 - 좌우로 꽉 채움 */}
               <div className="mt-4">
                 <p
-                  className="leading-relaxed whitespace-pre-line leading-4 text-base font-semibold"
-                  style={{ fontFamily: "굴림체, Gulim, monospace" , color: "#333333"}}
+                  className="leading-relaxed whitespace-pre-line leading-4 text-base font-semibold mt-0"
+                  style={{ fontFamily: "Pretendard-Regular, sans-serif", color: "#333333" }}
                 >
                   {person.description}
                 </p>
@@ -279,7 +323,7 @@ export default function MobileChatPage() {
           <div className="w-full mb-6">
             <h2
               className="font-bold text-black leading-relaxed px-2 text-left text-xl"
-              style={{ fontFamily: "굴림체, Gulim, monospace" }}
+              style={{ fontFamily: "ChosunGu, sans-serif" }}
             >
               주제: 연인과 싸웠을 때, 제일 먼저 울 것 같은 사람 순위
             </h2>
@@ -287,38 +331,66 @@ export default function MobileChatPage() {
 
           {/* 시상 내용 */}
           <div className="space-y-6">
-            {/* 1위 */}
+            {/* 1위 - 좌우 분할 레이아웃으로 변경 */}
             <div className="bg-white">
-              <div className="flex items-start gap-2 mb-2">
-                <span className="text-2xl font-bold text-black" style={{ fontFamily: "굴림체, Gulim, monospace" }}>
-                  1위
-                </span>
-                <span className="text-xl font-bold text-black" style={{ fontFamily: "굴림체, Gulim, monospace" }}>
-                  -
-                </span>
-                <span className="text-2xl font-bold text-black" style={{ fontFamily: "굴림체, Gulim, monospace" }}>
-                  곽규민
-                </span>
+              <div className="flex items-start gap-4">
+                {/* 왼쪽 절반 - 텍스트 */}
+                <div className="w-1/2">
+                  <div className="flex items-start gap-2 mb-2">
+                    <span className="text-2xl font-bold text-black" style={{ fontFamily: "BookkMyungjo-Bd, serif" }}>
+                      1위
+                    </span>
+                    <span className="text-xl font-bold text-black" style={{ fontFamily: "BookkMyungjo-Bd, serif" }}>
+                      -
+                    </span>
+                    <span
+                      className="text-2xl font-bold bg-gradient-to-r from-yellow-400 via-yellow-500 to-yellow-600 bg-clip-text text-transparent"
+                      style={{ fontFamily: "BookkMyungjo-Bd, serif" }}
+                    >
+                      곽규민
+                    </span>
+                  </div>
+                  <p
+                    className="text-base font-semibold leading-relaxed"
+                    style={{ fontFamily: "Pretendard-Regular, sans-serif", color: "#333333" }}
+                  >
+                    감정 표현이 솔직하고 직접적이라 속상한 마음을 숨기지 못할 것 같음
+                  </p>
+                </div>
+
+                {/* 오른쪽 절반 - firstplace.png 이미지 */}
+                <div className="w-1/2">
+                  <Image
+                    src="/images/firstplace.png"
+                    alt="1위는 이 사람"
+                    width={150}
+                    height={150}
+                    className="object-contain w-full"
+                  />
+                </div>
               </div>
-              <p className="text-base font-semibold leading-relaxed" style={{ fontFamily: "굴림체, Gulim, monospace", color: "#333333" }}>
-                감정 표현이 솔직하고 직접적이라 속상한 마음을 숨기지 못할 것 같음
-              </p>
             </div>
 
             {/* 2위 */}
             <div className="bg-white">
               <div className="flex items-start gap-2 mb-2">
-                <span className="text-2xl font-bold text-black" style={{ fontFamily: "굴림체, Gulim, monospace" }}>
+                <span className="text-2xl font-bold text-black" style={{ fontFamily: "BookkMyungjo-Bd, serif" }}>
                   2위
                 </span>
-                <span className="text-xl font-bold text-black" style={{ fontFamily: "굴림체, Gulim, monospace" }}>
+                <span className="text-xl font-bold text-black" style={{ fontFamily: "BookkMyungjo-Bd, serif" }}>
                   -
                 </span>
-                <span className="text-2xl font-bold text-black" style={{ fontFamily: "굴림체, Gulim, monospace" }}>
+                <span
+                  className="text-2xl font-bold bg-gradient-to-r from-gray-400 via-gray-500 to-gray-600 bg-clip-text text-transparent"
+                  style={{ fontFamily: "BookkMyungjo-Bd, serif" }}
+                >
                   이재현
                 </span>
               </div>
-              <p className="text-base font-semibold leading-relaxed" style={{ fontFamily: "굴림체, Gulim, monospace", color: "#333333" }}>
+              <p
+                className="text-base font-semibold leading-relaxed"
+                style={{ fontFamily: "Pretendard-Regular, sans-serif", color: "#333333" }}
+              >
                 평소 밝은 모습과 달리 속으로 많이 생각하는 타입이라 감정이 복받칠 것 같음
               </p>
             </div>
@@ -326,17 +398,23 @@ export default function MobileChatPage() {
             {/* 3위 */}
             <div className="bg-white">
               <div className="flex items-start gap-2 mb-2">
-                <span className="text-2xl font-bold text-black" style={{ fontFamily: "굴림체, Gulim, monospace" }}>
+                <span className="text-2xl font-bold text-black" style={{ fontFamily: "BookkMyungjo-Bd, serif" }}>
                   3위
                 </span>
-                <span className="text-xl font-bold text-black" style={{ fontFamily: "굴림체, Gulim, monospace" }}>
+                <span className="text-xl font-bold text-black" style={{ fontFamily: "BookkMyungjo-Bd, serif" }}>
                   -
                 </span>
-                <span className="text-2xl font-bold text-black" style={{ fontFamily: "굴림체, Gulim, monospace" }}>
+                <span
+                  className="text-2xl font-bold bg-gradient-to-r from-amber-600 via-amber-700 to-amber-800 bg-clip-text text-transparent"
+                  style={{ fontFamily: "BookkMyungjo-Bd, serif" }}
+                >
                   주형우
                 </span>
               </div>
-              <p className="text-base font-semibold leading-relaxed" style={{ fontFamily: "굴림체, Gulim, monospace", color: "#333333" }}>
+              <p
+                className="text-base font-semibold leading-relaxed"
+                style={{ fontFamily: "Pretendard-Regular, sans-serif", color: "#333333" }}
+              >
                 리더십이 강해 보이지만 사실 마음이 여린 편이라 예상외로 울 수도 있을 것 같음
               </p>
             </div>
@@ -379,7 +457,7 @@ export default function MobileChatPage() {
 
           {/* 안내문 */}
           <div className="mt-4 text-center">
-            <p className="text-sm text-gray-500" style={{ fontFamily: "바탕, Batang, serif" }}>
+            <p className="text-sm text-gray-500" style={{ fontFamily: "BookkMyungjo-Bd, serif" }}>
               ※ 결과페이지는 24시간 동안 공유 가능합니다.
             </p>
           </div>
@@ -421,7 +499,7 @@ export default function MobileChatPage() {
       <div className="mb-4 relative z-10">
         <div
           className="text-sm leading-normal space-y-1 leading-7 tracking-normal my-0 mt-[50px]"
-          style={{ fontFamily: "굴림체, Gulim, monospace", color: "#333333"}}
+          style={{ fontFamily: "ChosunGu, sans-serif", color: "#333333" }}
         >
           <p className="italic text-base leading-5 font-semibold">√ 친구들과의 대화가 너무 재밌으신 분</p>
           <p className="italic text-base leading-5 font-semibold">√ 그 대화가 잊혀지는 것이 아쉬우신 분</p>
@@ -446,7 +524,7 @@ export default function MobileChatPage() {
           <div className="absolute inset-0 flex items-center justify-center">
             <div
               className="text-black font-medium text-sm mt-[-20px] text-center whitespace-pre-line"
-              style={{ fontFamily: "굴림체, Gulim, monospace" }}
+              style={{ fontFamily: "ChosunGu, sans-serif" }}
             >
               {formatFileName(selectedFile.name)}
             </div>
@@ -464,7 +542,7 @@ export default function MobileChatPage() {
                 animation: "pulse 2s infinite",
               }}
             >
-              <Image src="/images/start.png" alt="시작하기" width={160} height={40} className="object-contain" />
+              <Image src="/images/start(1).png" alt="시작하기" width={160} height={40} className="object-contain" />
             </button>
           ) : (
             <button
@@ -489,12 +567,12 @@ export default function MobileChatPage() {
       {showPopup && (
         <div className="fixed inset-0 bg-white z-50">
           <div className="w-full h-full max-w-md mx-auto relative overflow-hidden">
-            {/* 닫기 버튼 */}
+            {/* 닫기 버튼 - 더 확실히 보이도록 개선 */}
             <button
               onClick={closePopup}
-              className="absolute top-4 right-4 z-20 p-2 hover:bg-gray-100 rounded-full transition-colors"
+              className="absolute top-4 right-4 z-20 p-3 bg-white rounded-full shadow-lg hover:bg-gray-100 transition-colors border border-gray-200"
             >
-              <X size={20} />
+              <X size={24} className="text-black" />
             </button>
 
             {/* 팝업 내용 */}
