@@ -40,6 +40,58 @@ function splitIntoChunks(text: string, chunkSize: number): string[] {
   return chunks;
 }
 
+// Helper: filter out non-informative messages
+function isInformativeMessage(msg: string): boolean {
+  const trimmed = msg.trim();
+  if (trimmed.length < 2) return false;
+  const nonInformativePatterns = [
+    /^ㅋ+$/, /^ㅎ+$/, /^ㅌ+$/, /^ㄷ+$/, // laughter
+    /^응+$/, /^ㅇ+$/, /^ㅇㅇ+$/, /^ㄴㄴ+$/, // short agreements
+    /^네+$/, /^아니+$/, /^웅+$/, /^헐+$/, /^오+$/, /^아+$/, /^음+$/, /^흠+$/, /^헉+$/,
+    /^[?!.,~]+$/, // just punctuation
+    /^([ㅋㅎㅌㄷ]+)+$/, // repeated laughter
+    /^([0-9]+)$/,
+  ];
+  for (const pattern of nonInformativePatterns) {
+    if (pattern.test(trimmed)) return false;
+  }
+  if (trimmed.length < 4) return false;
+  return true;
+}
+
+// Helper: collect up to 3 informative messages per member from a chat chunk
+function collectMemberMessages(chat: string): Record<string, string[]> {
+  const memberMessages: Record<string, string[]> = {};
+  const lines = chat.split('\n');
+  const messageRegex = /^(\S+)\s*:\s*(.+)$/; // e.g., "철수: 메시지"
+  for (const line of lines) {
+    const match = line.match(messageRegex);
+    if (match) {
+      const name = match[1];
+      const message = match[2];
+      if (!isInformativeMessage(message)) continue;
+      if (!memberMessages[name]) memberMessages[name] = [];
+      if (memberMessages[name].length < 3) {
+        memberMessages[name].push(message);
+      }
+    }
+  }
+  return memberMessages;
+}
+
+// Helper: merge member messages across chunks, limit to 3 per member
+function mergeMemberMessages(
+  all: Record<string, string[]>,
+  chunk: Record<string, string[]>
+): Record<string, string[]> {
+  for (const [name, msgs] of Object.entries(chunk)) {
+    if (!all[name]) all[name] = [];
+    all[name].push(...msgs);
+    all[name] = Array.from(new Set(all[name])).slice(0, 3); // dedupe, limit to 3
+  }
+  return all;
+}
+
 export async function POST(req: NextRequest) {
   const formData = await req.formData();
   const file = formData.get("file") as File;
@@ -91,6 +143,13 @@ export async function POST(req: NextRequest) {
     const maxChars = 20000;
     const chunks = splitIntoChunks(fileContent, maxChars);
 
+    // Collect representative messages per member across all chunks
+    let allMemberMessages: Record<string, string[]> = {};
+    for (const chunk of chunks) {
+      const chunkMessages = collectMemberMessages(chunk);
+      allMemberMessages = mergeMemberMessages(allMemberMessages, chunkMessages);
+    }
+
     // 1. Summarize each chunk
     const chunkSummaries: string[] = await Promise.all(
       chunks.map(async (chunk) => {
@@ -100,7 +159,7 @@ export async function POST(req: NextRequest) {
 **절대 지키길 바라는 조건은 다음과 같아:**
 
 1. 반드시 **짧고 웃긴 한 문장만** 써 줘. (길게 설명 금지)  
-2. "이 방은", "이 채팅방은" 같은 서론 금지 
+2. "이 방은", "이 채팅방은" 같은 서론 금지  
 3. **이모지 금지**, **감상적인 표현 금지**, **분석 느낌 금지**  
 4. "~인 듯", "~같다", "웃음도 상승 중" 같은 말투 금지 (재미없고 흐름 끊김)  
 5. **요즘 유행하는 드립/짤 말투**로, 딱 보고 피식하게  
@@ -162,92 +221,83 @@ ${chunkSummaries.join("\n")}
         // 3. For character/awards, use only the last chunk (limit to 5,000 chars)
         const lastChunk = chunks[chunks.length - 1];
         const safeLastChunk = lastChunk.length > 5000 ? lastChunk.slice(-5000) : lastChunk;
-        const characterPrompt = `아래 채팅방 대화 기록을 보고, 멤버별 캐릭터 매칭과 단톡방 시상식만 해 줘.
 
-2. 멤버별 캐릭터 매칭
-너는 지금부터 성격 분석가이자, 드립 장인 짤 생성기야.
-
-내가 주는 채팅방 대화와 멤버들(별명/이름 등)의 목록을 보고,  
-각 멤버가 아래 캐릭터 중 누구랑 가장 비슷한지 골라줘.
-
-근데 그냥 "비슷하다"는 식으로 말하면 재미없어.  
-무조건 **드립을 섞어서 재치 있고 웃기게** 설명해 줘야 해.
-
-조건은 아래와 같아:
-a. **채팅방에 등장하는 모든 멤버 각각에 대해**, 가장 비슷한 캐릭터 하나만 선택해. (멤버를 절대 빼먹지 마!)  
-b. 선택한 이유는 **웃기고, 캐릭터에 빙의하거나 말투를 패러디해서 써 줘.**  
-   (예: “이 친구는 거의 스폰지밥임. 이유? 아무 말 하고 다 웃음.” / “얘는 얼어붙은 엘사 그 자체. 감정 표현이 -50도야.”)  
-c. 너무 길지 않게, **재치 있는 한두 문장**으로 설명  
-d. **진지한 분석, 감성적인 말투, 과도한 설명은 금지**  
-e. 욕설, 성적인 표현, 민감한 주제는 절대 금지  
-
-이런 식으로 **캐릭터랑 대화 특징을 오버랩** 시켜서 재밌게 연결해줘.
-캐릭터 목록:
-${characterSummaries}
-
-3. 단톡방 시상식
-아래 시상식 주제(예: "${safeLastChunk.slice(0, 100)}...")를 참고해서, 채팅방 멤버 각각의 순위를 매기고, 그 이유를 유쾌하고 재치있게 써 줘.
-
-**시상식 순위(awards)는 반드시 1~3등까지만** 주고, **채팅방에서의 특징을 찰지게 드립으로 설명**  
-- 진지한 감상 ❌, 웃긴 과장/반전 드립 환영  
-- 말투는 "얘는 거의 00상 줘야 함ㅋㅋ", "존재 자체가 이벤트임" 등 자유롭게
-
-아래 채팅방 대화 기록과 시상식 주제를 참고해서, 위 두 가지를 JSON 객체로만 반환해 줘.
-반드시 JSON 객체만 반환해 줘. (최대한 짧고 간결하게!)
-**절대 JSON 포맷을 바꾸면 안 되고**,  
-안의 내용은 **유쾌하고 웃기고 드립력 충만하게** 써 줘야 해.
-
-예시 형식:
-{
-  "character_analysis": [
-    { "name": "철수", "character": "버럭이", "reason": "진짜 화수분임. 대화하다가 갑자기 버럭하는 거 레전드야 그냥" },
-    { "name": "영희", "character": "올라프", "reason": "긍정 에너지 뿜뿜, 분위기 메이커 굿" }
-  ],
-  "awards": [
-    { "rank": 1, "name": "주형우", "reason": "감정이입 장인, 드립치다가도 갑자기 감성 폭발." },
-    { "rank": 2, "name": "이재현", "reason": "겉으론 쿨한 척하지만, 속으론 이미 울고 있을듯,,," },
-    { "rank": 3, "name": "김철수", "reason": "존재 자체가 이벤트임ㅋㅋ" }
-  ]
-}
-
-채팅방 대화 기록:
-"""
-${safeLastChunk}
-"""`;
-        const characterMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-          { role: "system", content: "You are an assistant that analyzes chat logs and returns character/awards analysis as a JSON object." },
-          { role: "user", content: characterPrompt }
+        // Step 1: Character assignment (no evidence yet)
+        const characterAssignPrompt = `아래 채팅방 대화 기록을 보고, 멤버별 캐릭터 매칭만 해 줘.\n\n조건:\n- 반드시 채팅방에 등장하는 모든 멤버 각각에 대해, 아래 캐릭터 중 가장 비슷한 캐릭터 하나만 선택해. (멤버를 절대 빼먹지 마!)\n- 선택한 이유는 짧고 재치 있게 써 줘.\n- JSON 배열로만 반환해. (예: [ { \"name\": \"철수\", \"character\": \"버럭이\", \"reason\": \"진짜 화수분임. 대화하다가 갑자기 버럭하는 거 레전드야 그냥\" }, ... ])\n\n캐릭터 목록:\n${characterSummaries}\n\n채팅방 대화 기록:\n"""\n${safeLastChunk}\n"""`;
+        const characterAssignMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+          { role: "system", content: "You are an assistant that analyzes chat logs and returns character assignments as a JSON array." },
+          { role: "user", content: characterAssignPrompt }
         ];
-        const characterRaw = await analyzeWithOpenAI(characterMessages) ?? "";
-        let characterObj: unknown = characterRaw;
-        if (typeof characterRaw === "string") {
-          let cleaned = characterRaw.trim();
+        const characterAssignRaw = await analyzeWithOpenAI(characterAssignMessages) ?? "";
+        let characterAssignArr: { name: string; character: string; reason: string }[] = [];
+        if (typeof characterAssignRaw === "string") {
+          let cleaned = characterAssignRaw.trim();
           cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
-          console.log('[CHARACTER_RAW_BEFORE_PARSE]', cleaned);
           try {
-            characterObj = JSON.parse(cleaned);
+            characterAssignArr = JSON.parse(cleaned);
           } catch {
-            // Try to recover the largest valid JSON substring
-            const firstBrace = cleaned.indexOf('{');
-            const lastBrace = cleaned.lastIndexOf('}');
-            if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-              const possibleJson = cleaned.slice(firstBrace, lastBrace + 1);
+            // Try to recover the largest valid JSON array substring
+            const firstBracket = cleaned.indexOf('[');
+            const lastBracket = cleaned.lastIndexOf(']');
+            if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+              const possibleJson = cleaned.slice(firstBracket, lastBracket + 1);
               try {
-                characterObj = JSON.parse(possibleJson);
+                characterAssignArr = JSON.parse(possibleJson);
               } catch {
-                characterObj = { error: "Failed to parse character JSON", raw: characterRaw };
+                characterAssignArr = [];
               }
-            } else {
-              characterObj = { error: "Failed to parse character JSON", raw: characterRaw };
+            }
+          }
+        }
+        // Ensure all members are included in characterAssignArr
+        const allChat = chunks.join('\n');
+        const allMemberMessagesForAssignment = collectMemberMessages(allChat);
+        const allMembers = Object.keys(allMemberMessagesForAssignment);
+        const assignedNames = new Set(characterAssignArr.map(c => c.name));
+        for (const member of allMembers) {
+          if (!assignedNames.has(member)) {
+            characterAssignArr.push({
+              name: member,
+              character: '분석 불가',
+              reason: '메시지가 부족하거나 분석이 불가합니다.'
+            });
+          }
+        }
+
+        // Step 2: Skip evidence extraction for speed. Use characterAssignArr directly.
+
+        // Step 3: Awards prompt (dedicated LLM call)
+        const awardsPrompt = `아래 채팅방 대화 기록을 보고, 단톡방 시상식(awards)만 해 줘.\n\n조건:\n- 반드시 1~3등까지만 주고, 채팅방에서의 특징을 찰지게 드립으로 설명\n- 진지한 감상 ❌, 웃긴 과장/반전 드립 환영\n- 말투는 \"얘는 거의 00상 줘야 함ㅋㅋ\", \"존재 자체가 이벤트임\" 등 자유롭게\n- 반드시 아래 형식의 JSON 배열로만 반환해. (예: [ { \"rank\": 1, \"name\": \"주형우\", \"reason\": \"감정이입 장인, 드립치다가도 갑자기 감성 폭발.\" }, ... ])\n\n채팅방 대화 기록:\n"""\n${safeLastChunk}\n"""`;
+        const awardsMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+          { role: "system", content: "You are an assistant that analyzes chat logs and returns awards as a JSON array." },
+          { role: "user", content: awardsPrompt }
+        ];
+        const awardsRaw = await analyzeWithOpenAI(awardsMessages) ?? "";
+        let awardsArr: { rank: number; name: string; reason: string }[] = [];
+        if (typeof awardsRaw === "string") {
+          let cleaned = awardsRaw.trim();
+          cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
+          try {
+            awardsArr = JSON.parse(cleaned);
+          } catch {
+            // Try to recover the largest valid JSON array substring
+            const firstBracket = cleaned.indexOf('[');
+            const lastBracket = cleaned.lastIndexOf(']');
+            if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+              const possibleJson = cleaned.slice(firstBracket, lastBracket + 1);
+              try {
+                awardsArr = JSON.parse(possibleJson);
+              } catch {
+                awardsArr = [];
+              }
             }
           }
         }
 
         // Merge summary and character/awards analysis
-        let mergedResult: Record<string, unknown> = typeof summaryObj === 'object' && summaryObj !== null ? summaryObj as Record<string, unknown> : {};
-        if (typeof characterObj === "object" && characterObj !== null) {
-          mergedResult = { ...mergedResult, ...characterObj as Record<string, unknown> };
-        }
+        const mergedResult: Record<string, unknown> = typeof summaryObj === 'object' && summaryObj !== null ? summaryObj as Record<string, unknown> : {};
+        mergedResult.character_analysis = characterAssignArr;
+        mergedResult.awards = awardsArr;
 
         // Log the final analysis result for debugging
         console.log("[ANALYSIS_RESULT]", JSON.stringify(mergedResult, null, 2));
@@ -269,6 +319,13 @@ ${safeLastChunk}
         // Chunking for large files
         const maxChars = 20000;
         const chunks = splitIntoChunks(content, maxChars);
+
+        // Collect representative messages per member across all chunks
+        let allMemberMessages: Record<string, string[]> = {};
+        for (const chunk of chunks) {
+          const chunkMessages = collectMemberMessages(chunk);
+          allMemberMessages = mergeMemberMessages(allMemberMessages, chunkMessages);
+        }
 
         // 1. Summarize each chunk
         const chunkSummaries: string[] = await Promise.all(
@@ -343,92 +400,83 @@ ${chunkSummaries.join("\n")}
         // 3. For character/awards, use only the last chunk (limit to 5,000 chars)
         const lastChunk = chunks[chunks.length - 1];
         const safeLastChunk = lastChunk.length > 5000 ? lastChunk.slice(-5000) : lastChunk;
-        const characterPrompt = `아래 채팅방 대화 기록을 보고, 멤버별 캐릭터 매칭과 단톡방 시상식만 해 줘.
 
-2. 멤버별 캐릭터 매칭
-너는 지금부터 성격 분석가이자, 드립 장인 짤 생성기야.
-
-내가 주는 채팅방 대화와 멤버들(별명/이름 등)의 목록을 보고,  
-각 멤버가 아래 캐릭터 중 누구랑 가장 비슷한지 골라줘.
-
-근데 그냥 "비슷하다"는 식으로 말하면 재미없어.  
-무조건 **드립을 섞어서 재치 있고 웃기게** 설명해 줘야 해.
-
-조건은 아래와 같아:
-a. **채팅방에 등장하는 모든 멤버 각각에 대해**, 가장 비슷한 캐릭터 하나만 선택해. (멤버를 절대 빼먹지 마!)  
-b. 선택한 이유는 **웃기고, 캐릭터에 빙의하거나 말투를 패러디해서 써 줘.**  
-   (예: "이 친구는 거의 스폰지밥임. 이유? 아무 말 하고 다 웃음." / "얘는 얼어붙은 엘사 그 자체. 감정 표현이 -50도야.")  
-c. 너무 길지 않게, **재치 있는 한두 문장**으로 설명  
-d. **진지한 분석, 감성적인 말투, 과도한 설명은 금지**  
-e. 욕설, 성적인 표현, 민감한 주제는 절대 금지  
-
-이런 식으로 **캐릭터랑 대화 특징을 오버랩** 시켜서 재밌게 연결해줘.
-캐릭터 목록:
-${characterSummaries}
-
-3. 단톡방 시상식
-아래 시상식 주제(예: "${safeLastChunk.slice(0, 100)}...")를 참고해서, 채팅방 멤버 각각의 순위를 매기고, 그 이유를 유쾌하고 재치있게 써 줘.
-
-**시상식 순위(awards)는 반드시 1~3등까지만** 주고, **채팅방에서의 특징을 찰지게 드립으로 설명**  
-- 진지한 감상 ❌, 웃긴 과장/반전 드립 환영  
-- 말투는 "얘는 거의 00상 줘야 함ㅋㅋ", "존재 자체가 이벤트임" 등 자유롭게
-
-아래 채팅방 대화 기록과 시상식 주제를 참고해서, 위 두 가지를 JSON 객체로만 반환해 줘.
-반드시 JSON 객체만 반환해 줘. (최대한 짧고 간결하게!)
-**절대 JSON 포맷을 바꾸면 안 되고**,  
-안의 내용은 **유쾌하고 웃기고 드립력 충만하게** 써 줘야 해.
-
-예시 형식:
-{
-  "character_analysis": [
-    { "name": "철수", "character": "버럭이", "reason": "진짜 화수분임. 대화하다가 갑자기 버럭하는 거 레전드야 그냥" },
-    { "name": "영희", "character": "올라프", "reason": "긍정 에너지 뿜뿜, 분위기 메이커 굿" }
-  ],
-  "awards": [
-    { "rank": 1, "name": "주형우", "reason": "감정이입 장인, 드립치다가도 갑자기 감성 폭발." },
-    { "rank": 2, "name": "이재현", "reason": "겉으론 쿨한 척하지만, 속으론 이미 울고 있을듯,,," },
-    { "rank": 3, "name": "김철수", "reason": "존재 자체가 이벤트임ㅋㅋ" }
-  ]
-}
-
-채팅방 대화 기록:
-"""
-${safeLastChunk}
-"""`;
-        const characterMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-          { role: "system", content: "You are an assistant that analyzes chat logs and returns character/awards analysis as a JSON object." },
-          { role: "user", content: characterPrompt }
+        // Step 1: Character assignment (no evidence yet)
+        const characterAssignPrompt = `아래 채팅방 대화 기록을 보고, 멤버별 캐릭터 매칭만 해 줘.\n\n조건:\n- 반드시 채팅방에 등장하는 모든 멤버 각각에 대해, 아래 캐릭터 중 가장 비슷한 캐릭터 하나만 선택해. (멤버를 절대 빼먹지 마!)\n- 선택한 이유는 재치 있게 두 문장 써 줘.\n- JSON 배열로만 반환해. (예: [ { \"name\": \"철수\", \"character\": \"버럭이\", \"reason\": \"진짜 화수분임. 대화하다가 갑자기 버럭하는 거 레전드야 그냥\" }, ... ])\n\n캐릭터 목록:\n${characterSummaries}\n\n채팅방 대화 기록:\n"""\n${safeLastChunk}\n"""`;
+        const characterAssignMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+          { role: "system", content: "You are an assistant that analyzes chat logs and returns character assignments as a JSON array." },
+          { role: "user", content: characterAssignPrompt }
         ];
-        const characterRaw = await analyzeWithOpenAI(characterMessages) ?? "";
-        let characterObj: unknown = characterRaw;
-        if (typeof characterRaw === "string") {
-          let cleaned = characterRaw.trim();
+        const characterAssignRaw = await analyzeWithOpenAI(characterAssignMessages) ?? "";
+        let characterAssignArr: { name: string; character: string; reason: string }[] = [];
+        if (typeof characterAssignRaw === "string") {
+          let cleaned = characterAssignRaw.trim();
           cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
-          console.log('[CHARACTER_RAW_BEFORE_PARSE]', cleaned);
           try {
-            characterObj = JSON.parse(cleaned);
+            characterAssignArr = JSON.parse(cleaned);
           } catch {
-            // Try to recover the largest valid JSON substring
-            const firstBrace = cleaned.indexOf('{');
-            const lastBrace = cleaned.lastIndexOf('}');
-            if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-              const possibleJson = cleaned.slice(firstBrace, lastBrace + 1);
+            // Try to recover the largest valid JSON array substring
+            const firstBracket = cleaned.indexOf('[');
+            const lastBracket = cleaned.lastIndexOf(']');
+            if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+              const possibleJson = cleaned.slice(firstBracket, lastBracket + 1);
               try {
-                characterObj = JSON.parse(possibleJson);
+                characterAssignArr = JSON.parse(possibleJson);
               } catch {
-                characterObj = { error: "Failed to parse character JSON", raw: characterRaw };
+                characterAssignArr = [];
               }
-            } else {
-              characterObj = { error: "Failed to parse character JSON", raw: characterRaw };
+            }
+          }
+        }
+        // Ensure all members are included in characterAssignArr (zip)
+        const allChat = chunks.join('\n');
+        const allMemberMessagesForAssignment = collectMemberMessages(allChat);
+        const allMembers = Object.keys(allMemberMessagesForAssignment);
+        const assignedNames = new Set(characterAssignArr.map(c => c.name));
+        for (const member of allMembers) {
+          if (!assignedNames.has(member)) {
+            characterAssignArr.push({
+              name: member,
+              character: '분석 불가',
+              reason: '메시지가 부족하거나 분석이 불가합니다.'
+            });
+          }
+        }
+
+        // Step 2: Skip evidence extraction for speed. Use characterAssignArr directly.
+
+        // Step 3: Awards prompt (dedicated LLM call)
+        const awardsPrompt = `아래 채팅방 대화 기록을 보고, 단톡방 시상식(awards)만 해 줘.\n\n조건:\n- 반드시 1~3등까지만 주고, 채팅방에서의 특징을 찰지게 드립으로 설명\n- 진지한 감상 ❌, 웃긴 과장/반전 드립 환영\n- 말투는 \"얘는 거의 00상 줘야 함ㅋㅋ\", \"존재 자체가 이벤트임\" 등 자유롭게\n- 반드시 아래 형식의 JSON 배열로만 반환해. (예: [ { \"rank\": 1, \"name\": \"주형우\", \"reason\": \"감정이입 장인, 드립치다가도 갑자기 감성 폭발.\" }, ... ])\n\n채팅방 대화 기록:\n"""\n${safeLastChunk}\n"""`;
+        const awardsMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+          { role: "system", content: "You are an assistant that analyzes chat logs and returns awards as a JSON array." },
+          { role: "user", content: awardsPrompt }
+        ];
+        const awardsRaw = await analyzeWithOpenAI(awardsMessages) ?? "";
+        let awardsArr: { rank: number; name: string; reason: string }[] = [];
+        if (typeof awardsRaw === "string") {
+          let cleaned = awardsRaw.trim();
+          cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
+          try {
+            awardsArr = JSON.parse(cleaned);
+          } catch {
+            // Try to recover the largest valid JSON array substring
+            const firstBracket = cleaned.indexOf('[');
+            const lastBracket = cleaned.lastIndexOf(']');
+            if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+              const possibleJson = cleaned.slice(firstBracket, lastBracket + 1);
+              try {
+                awardsArr = JSON.parse(possibleJson);
+              } catch {
+                awardsArr = [];
+              }
             }
           }
         }
 
         // Merge summary and character/awards analysis
-        let mergedResult: Record<string, unknown> = typeof summaryObj === 'object' && summaryObj !== null ? summaryObj as Record<string, unknown> : {};
-        if (typeof characterObj === "object" && characterObj !== null) {
-          mergedResult = { ...mergedResult, ...characterObj as Record<string, unknown> };
-        }
+        const mergedResult: Record<string, unknown> = typeof summaryObj === 'object' && summaryObj !== null ? summaryObj as Record<string, unknown> : {};
+        mergedResult.character_analysis = characterAssignArr;
+        mergedResult.awards = awardsArr;
 
         // Log the zip analysis result for debugging
         console.log("[ANALYSIS_RESULT] (zip)", JSON.stringify(mergedResult, null, 2));

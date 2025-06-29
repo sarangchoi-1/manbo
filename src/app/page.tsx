@@ -182,7 +182,13 @@ export default function MobileChatPage() {
     };
     const summary = result.analysis?.summary || "";
     const explanation = result.analysis?.explanation || "";
-    const characterAnalysis = result.analysis?.character_analysis || [];
+    const characterAnalysis = (result.analysis?.character_analysis || []).filter(
+      (person) =>
+        !(
+          person.character === "분석 불가" &&
+          person.reason === "메시지가 부족하거나 분석이 불가합니다."
+        )
+    );
     const awards = result.analysis?.awards || [];
 
     return (
