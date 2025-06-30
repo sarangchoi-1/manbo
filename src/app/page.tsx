@@ -3,7 +3,7 @@
 import type React from "react"
 
 import Image from "next/image"
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { ChevronLeft, ChevronRight, X } from "lucide-react"
 
 export default function MobileChatPage() {
@@ -171,8 +171,10 @@ export default function MobileChatPage() {
   };
 
   // Helper to get all available additional question indices (1, 2, 3, ...)
-  const getAllAdditionalIndices = () =>
-    awardsResult ? awardsResult.map((_, i) => i).slice(1) : [];
+  const getAllAdditionalIndices = useCallback(
+    () => (awardsResult ? awardsResult.map((_, i) => i).slice(1) : []),
+    [awardsResult]
+  );
 
   // Helper to get a random sample from an array
   function getRandomSample<T>(arr: T[], n: number): T[] {
@@ -191,7 +193,7 @@ export default function MobileChatPage() {
       const indices = getAllAdditionalIndices();
       setCurrentChoices(getRandomSample(indices, 3));
     }
-  }, [awardsResult, currentChoices.length, viewedQuestions.length]);
+  }, [awardsResult, currentChoices.length, viewedQuestions.length, getAllAdditionalIndices]);
 
   const handleSelectQuestion = (idx: number) => {
     setSelectedQuestion(idx);
