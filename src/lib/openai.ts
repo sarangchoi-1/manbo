@@ -6,12 +6,13 @@ const openai = new OpenAI({
 
 export async function analyzeWithOpenAI(
   messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
-  model: string = "gpt-3.5-turbo"
+  model: string = "gpt-3.5-turbo",
+  max_tokens: number = 500
 ) {
   const response = await openai.chat.completions.create({
     model,
     messages,
-    max_tokens: 500,
+    max_tokens,
   });
   return response.choices[0].message?.content;
 }
