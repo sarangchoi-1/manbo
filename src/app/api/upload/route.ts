@@ -93,6 +93,50 @@ function mergeMemberMessages(
   return all;
 }
 
+// Helper: safely parse JSON from OpenAI response that may include markdown code fences and extra text
+function parseOpenAIResponse(rawResponse: string): unknown {
+  if (typeof rawResponse !== "string") {
+    return { error: "Invalid response type", raw: rawResponse };
+  }
+
+  let cleaned = rawResponse.trim();
+  
+  // Remove markdown code fences and extract JSON
+  cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").trim();
+  
+  // Find the end of JSON block (either ``` or end of valid JSON)
+  const codeBlockEnd = cleaned.indexOf('```');
+  if (codeBlockEnd !== -1) {
+    cleaned = cleaned.substring(0, codeBlockEnd).trim();
+  }
+  
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    // Try to extract JSON from the response more aggressively
+    const jsonMatch = rawResponse.match(/\{[\s\S]*?\}/);
+    if (jsonMatch) {
+      try {
+        return JSON.parse(jsonMatch[0]);
+      } catch {
+        return { error: "Failed to parse JSON", raw: rawResponse };
+      }
+    }
+    
+    // Try to extract JSON array
+    const arrayMatch = rawResponse.match(/\[[\s\S]*?\]/);
+    if (arrayMatch) {
+      try {
+        return JSON.parse(arrayMatch[0]);
+      } catch {
+        return { error: "Failed to parse JSON array", raw: rawResponse };
+      }
+    }
+    
+    return { error: "No valid JSON found", raw: rawResponse };
+  }
+}
+
 export async function POST(req: NextRequest) {
   const formData = await req.formData();
   const file = formData.get("file") as File;
@@ -214,16 +258,7 @@ ${chunkSummaries.join("\n")}
           { role: "user", content: finalPrompt }
         ];
         const summaryRaw = await analyzeWithOpenAI(finalMessages) ?? "";
-        let summaryObj: unknown = summaryRaw;
-        if (typeof summaryRaw === "string") {
-          let cleaned = summaryRaw.trim();
-          cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
-          try {
-            summaryObj = JSON.parse(cleaned);
-          } catch {
-            summaryObj = { error: "Failed to parse summary JSON", raw: summaryRaw };
-          }
-        }
+        const summaryObj = parseOpenAIResponse(summaryRaw);
         // Standardize explanation key
         if (typeof summaryObj === "object" && summaryObj !== null) {
           const obj = summaryObj as Record<string, unknown>;
@@ -253,25 +288,12 @@ ${chunkSummaries.join("\n")}
           { role: "user", content: characterAssignPrompt }
         ];
         const characterAssignRaw = await analyzeWithOpenAI(characterAssignMessages) ?? "";
+        const characterAssignResult = parseOpenAIResponse(characterAssignRaw);
         let characterAssignArr: { name: string; character: string; reason: string }[] = [];
-        if (typeof characterAssignRaw === "string") {
-          let cleaned = characterAssignRaw.trim();
-          cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
-          try {
-            characterAssignArr = JSON.parse(cleaned);
-          } catch {
-            // Try to recover the largest valid JSON array substring
-            const firstBracket = cleaned.indexOf('[');
-            const lastBracket = cleaned.lastIndexOf(']');
-            if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
-              const possibleJson = cleaned.slice(firstBracket, lastBracket + 1);
-              try {
-                characterAssignArr = JSON.parse(possibleJson);
-              } catch {
-                characterAssignArr = [];
-              }
-            }
-          }
+        if (Array.isArray(characterAssignResult)) {
+          characterAssignArr = characterAssignResult;
+        } else {
+          characterAssignArr = [];
         }
         // Ensure all members are included in characterAssignArr
         const allChat = chunks.join('\n');
@@ -306,25 +328,12 @@ ${chunkSummaries.join("\n")}
               { role: "user", content: awardsPrompt }
             ];
             const awardsRaw = await analyzeWithOpenAI(awardsMessages) ?? "";
+            const awardsResult = parseOpenAIResponse(awardsRaw);
             let awardsArr: { rank: number; name: string; reason: string }[] = [];
-            if (typeof awardsRaw === "string") {
-              let cleaned = awardsRaw.trim();
-              cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
-              try {
-                awardsArr = JSON.parse(cleaned);
-              } catch {
-                // Try to recover the largest valid JSON array substring
-                const firstBracket = cleaned.indexOf('[');
-                const lastBracket = cleaned.lastIndexOf(']');
-                if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
-                  const possibleJson = cleaned.slice(firstBracket, lastBracket + 1);
-                  try {
-                    awardsArr = JSON.parse(possibleJson);
-                  } catch {
-                    awardsArr = [];
-                  }
-                }
-              }
+            if (Array.isArray(awardsResult)) {
+              awardsArr = awardsResult;
+            } else {
+              awardsArr = [];
             }
             return { topic, awards: awardsArr };
           })
@@ -434,16 +443,7 @@ ${chunkSummaries.join("\n")}
           { role: "user", content: finalPrompt }
         ];
         const summaryRaw = await analyzeWithOpenAI(finalMessages) ?? "";
-        let summaryObj: unknown = summaryRaw;
-        if (typeof summaryRaw === "string") {
-          let cleaned = summaryRaw.trim();
-          cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
-          try {
-            summaryObj = JSON.parse(cleaned);
-          } catch {
-            summaryObj = { error: "Failed to parse summary JSON", raw: summaryRaw };
-          }
-        }
+        const summaryObj = parseOpenAIResponse(summaryRaw);
         // Standardize explanation key (zip)
         if (typeof summaryObj === "object" && summaryObj !== null) {
           const obj = summaryObj as Record<string, unknown>;
@@ -473,25 +473,12 @@ ${chunkSummaries.join("\n")}
           { role: "user", content: characterAssignPrompt }
         ];
         const characterAssignRaw = await analyzeWithOpenAI(characterAssignMessages) ?? "";
+        const characterAssignResult = parseOpenAIResponse(characterAssignRaw);
         let characterAssignArr: { name: string; character: string; reason: string }[] = [];
-        if (typeof characterAssignRaw === "string") {
-          let cleaned = characterAssignRaw.trim();
-          cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
-          try {
-            characterAssignArr = JSON.parse(cleaned);
-          } catch {
-            // Try to recover the largest valid JSON array substring
-            const firstBracket = cleaned.indexOf('[');
-            const lastBracket = cleaned.lastIndexOf(']');
-            if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
-              const possibleJson = cleaned.slice(firstBracket, lastBracket + 1);
-              try {
-                characterAssignArr = JSON.parse(possibleJson);
-              } catch {
-                characterAssignArr = [];
-              }
-            }
-          }
+        if (Array.isArray(characterAssignResult)) {
+          characterAssignArr = characterAssignResult;
+        } else {
+          characterAssignArr = [];
         }
         // Ensure all members are included in characterAssignArr (zip)
         const allChat = chunks.join('\n');
@@ -526,25 +513,12 @@ ${chunkSummaries.join("\n")}
               { role: "user", content: awardsPrompt }
             ];
             const awardsRaw = await analyzeWithOpenAI(awardsMessages) ?? "";
+            const awardsResult = parseOpenAIResponse(awardsRaw);
             let awardsArr: { rank: number; name: string; reason: string }[] = [];
-            if (typeof awardsRaw === "string") {
-              let cleaned = awardsRaw.trim();
-              cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
-              try {
-                awardsArr = JSON.parse(cleaned);
-              } catch {
-                // Try to recover the largest valid JSON array substring
-                const firstBracket = cleaned.indexOf('[');
-                const lastBracket = cleaned.lastIndexOf(']');
-                if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
-                  const possibleJson = cleaned.slice(firstBracket, lastBracket + 1);
-                  try {
-                    awardsArr = JSON.parse(possibleJson);
-                  } catch {
-                    awardsArr = [];
-                  }
-                }
-              }
+            if (Array.isArray(awardsResult)) {
+              awardsArr = awardsResult;
+            } else {
+              awardsArr = [];
             }
             return { topic, awards: awardsArr };
           })
